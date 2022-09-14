@@ -27,12 +27,12 @@ const char *kernel_source =
 "  float res = 0;\n"
 "  global const float *end = input + input_count;\n"
 "  while (input < end) {\n"
-//"printf(\"[%f %f] \", *input, *weight);\n"
+//"printf(\"[%f %f] \", *input, *weight);\n" //debug
 "    res += (*input++) * (*weight++);\n"
 "  }\n"
 "  res += *(biases + id);\n"
 "  *output = 1/(1+exp(-res));\n"
-"  printf(\"(res:%f output:%f) \", res, *output);\n"
+"  printf(\"(res:%f output:%f) \", res, *output);\n" //debug
 "}\n"
 ;
 
@@ -58,7 +58,7 @@ int layer_init(layer *l, unsigned size, memory *inputs, cl_context context) {
   if (err) return err;
   err = mem_init(&l->biases, inputs->length, sizeof(float), 0, context);
   if (err) goto err_biases_init;
-  err = mem_init(&l->outputs, inputs->length, sizeof(float), 0, context);
+  err = mem_init(&l->outputs, size, sizeof(float), 0, context);
   if (err) goto err_output_init;
   l->inputs = inputs;
   l->size = size;
@@ -83,22 +83,6 @@ void layer_destroy(layer *l) {
   mem_destroy(&l->outputs);
   mem_destroy(&l->biases);
   mem_destroy(&l->weights);
-}
-
-int prep_compute_kernel_args(layer *l, cl_kernel kernel) {
-  int err = 0;
-  err = clSetKernelArg(kernel, 0, sizeof(cl_mem), &l->inputs->buf);
-  if (err) return err;
-  err = clSetKernelArg(kernel, 1, sizeof(unsigned), &l->inputs->length);
-  if (err) return err;
-  err = clSetKernelArg(kernel, 2, sizeof(cl_mem), &l->outputs.buf);
-  if (err) return err;
-  err = clSetKernelArg(kernel, 3, sizeof(cl_mem), &l->weights.buf);
-  if (err) return err;
-  err = clSetKernelArg(kernel, 4, sizeof(cl_mem), &l->biases.buf);
-  if (err) return err;
-  err = clSetKernelArg(kernel, 5, sizeof(unsigned), &l->size);
-  return err;
 }
 
 typedef struct {
@@ -152,6 +136,58 @@ void network_destroy(network *n) {
   free(n->layers);
 }
 
+int network_prep_neuron_params(network *n, cl_command_queue commands) {
+  int err = 0;
+  for (layer *cur = n->layers; cur < n->layers + n->size; cur++) {
+    err = mem_write_buffer(&cur->weights, commands, CL_FALSE);
+    if (err) break;
+    err = mem_write_buffer(&cur->biases, commands, CL_FALSE);
+    if (err) break;
+  }
+  clFinish(commands);
+  return err;
+}
+
+int layer_compute(layer *l, size_t max_workgroup_size, cl_command_queue commands, cl_kernel kernel) {
+  int err;
+  
+  size_t total_workgroup_size = l->size;
+  total_workgroup_size += max_workgroup_size - total_workgroup_size%max_workgroup_size;
+  
+  err = clSetKernelArg(kernel, 0, sizeof(cl_mem), &l->inputs->buf);
+  if (err) return err;
+  err = clSetKernelArg(kernel, 1, sizeof(unsigned), &l->inputs->length);
+  if (err) return err;
+  err = clSetKernelArg(kernel, 2, sizeof(cl_mem), &l->outputs.buf);
+  if (err) return err;
+  err = clSetKernelArg(kernel, 3, sizeof(cl_mem), &l->weights.buf);
+  if (err) return err;
+  err = clSetKernelArg(kernel, 4, sizeof(cl_mem), &l->biases.buf);
+  if (err) return err;
+  err = clSetKernelArg(kernel, 5, sizeof(unsigned), &l->size);
+  if (err) return err;
+  
+  return clEnqueueNDRangeKernel(commands, kernel, 1, NULL, &total_workgroup_size, &max_workgroup_size, 0, NULL, NULL);
+}
+
+int network_compute(network *n, size_t max_workgroup_size, cl_command_queue commands, cl_kernel kernel) {
+  int err;
+  layer *cur = n->layers;
+  
+  err = mem_write_buffer(cur->inputs, commands, CL_TRUE);
+  if (err) return err;
+  
+  for (; cur < n->layers + n->size; cur++) {
+    err = layer_compute(cur, max_workgroup_size, commands, kernel);
+    if (err) return err;
+    clFinish(commands);
+    printf("\n\n"); //debug
+  }
+  
+  cur--;
+  return mem_read_buffer(&cur->outputs, commands, CL_TRUE);
+}
+
 #define PANIC(msg, code) { printf("%s failed with error code %d.\n", msg, code); exit(-1); }
 
 int main() {
@@ -201,30 +237,14 @@ int main() {
   unsigned layer_sizes[] = {15, 10, 0};
   err = network_init(&n, &input, &layer_sizes[0], context);
   
-  /*
-  size_t max_wg_size;
-  err = clGetKernelWorkGroupInfo(kernel, device_id, CL_KERNEL_WORK_GROUP_SIZE, sizeof(size_t), &max_wg_size, NULL);
+  size_t max_workgroup_size;
+  err = clGetKernelWorkGroupInfo(kernel, device_id, CL_KERNEL_WORK_GROUP_SIZE, sizeof(size_t), &max_workgroup_size, NULL);
   if (err) PANIC("clGetKernelWorkGroupInfo", err);
-  */
   
-  err = mem_write_buffer(n.layers[0].inputs, commands, CL_FALSE);
-  if (err) PANIC("mem_write_buffer", err);
-  err = mem_write_buffer(&n.layers[0].weights, commands, CL_FALSE);
-  if (err) PANIC("mem_write_buffer", err);
-  err = mem_write_buffer(&n.layers[0].biases, commands, CL_FALSE);
-  if (err) PANIC("mem_write_buffer", err);
-  clFinish(commands);
-  
-  err = prep_compute_kernel_args(&n.layers[0], kernel);
-  if (err) PANIC("prep_compute_kernel_args", err);
-  
-  size_t max_wg_size = 15;
-  
-  size_t total_size = n.layers[0].size;
-  err = clEnqueueNDRangeKernel(commands, kernel, 1, NULL, &total_size, &max_wg_size, 0, NULL, NULL);
-  if (err) PANIC("clEnqueueNDRangeKernel", err);
-  
-  clFinish(commands);
+  err = network_prep_neuron_params(&n, commands);
+  if (err) PANIC("network_prep_neuron_params", err);
+  err = network_compute(&n, max_workgroup_size, commands, kernel);
+  if (err) PANIC("network_compute", err);
   
   //free(data);
   network_destroy(&n);
