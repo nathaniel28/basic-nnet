@@ -14,7 +14,7 @@
 #include "opencl_util.h"
 
 //https://github.com/projectgalateia/mnist
-//#define USE_MNIST_LOADER
+#define USE_MNIST_LOADER
 #define MNIST_FLOAT
 #include "mnist.h"
 
@@ -188,6 +188,15 @@ int network_compute(network *n, size_t max_workgroup_size, cl_command_queue comm
   return mem_read_buffer(&cur->outputs, commands, CL_TRUE);
 }
 
+float partial_quadratic_cost(float *expected, float *result, unsigned length) {
+  float sum = 0;
+  for (unsigned i = 0; i < length; i++) {
+    float diff = (*expected++) - (*result++);
+    sum += diff*diff;
+  }
+  return sum/2.0;
+}
+
 #define PANIC(msg, code) { printf("%s failed with error code %d.\n", msg, code); exit(-1); }
 
 int main() {
@@ -220,18 +229,22 @@ int main() {
   cl_kernel kernel = clCreateKernel(program, "compute", &err);
   if (err) PANIC("clCreateKernel", err);
   
-  /*
   mnist_data *data;
   unsigned data_count;
   err = mnist_load("data/train-images.idx3-ubyte", "data/train-labels.idx1-ubyte", &data, &data_count);
   if (err) PANIC("mnist_load", err);
-  */
-  
   memory input;
-  mem_init(&input, 28*28, sizeof(float), 0, context);
-  for (float *cur = (float *) input.ptr; cur < ((float *) input.ptr) + input.length; cur++) {
-    *cur = scaled_rand();
+  input.ptr = &data[0].data[0];
+  input.length = 28*28;
+  input.unit_size = sizeof(float);
+  input.buf = clCreateBuffer(context, CL_MEM_READ_ONLY|CL_MEM_USE_HOST_PTR, input.length*input.unit_size, input.ptr, &err);
+  if (err) PANIC("clCreateBuffer", err);
+  
+  for (unsigned i = 0; i < input.length; i++) {
+    if (i % 28 == 0) printf("\n");
+    printf("%c", *(((float *) input.ptr) + i) >= 0.5 ? '1' : '0');
   }
+  printf("\nlabel: %d\n", data[0].label);
   
   network n;
   unsigned layer_sizes[] = {15, 10, 0};
@@ -246,7 +259,7 @@ int main() {
   err = network_compute(&n, max_workgroup_size, commands, kernel);
   if (err) PANIC("network_compute", err);
   
-  //free(data);
+  free(data);
   network_destroy(&n);
   clReleaseKernel(kernel);
   clReleaseProgram(program);
