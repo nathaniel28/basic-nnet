@@ -314,6 +314,5 @@ int main() {
   clReleaseProgram(program);
   clReleaseCommandQueue(commands);
   clReleaseContext(context);
-  
   return 0;
 }
