@@ -19,20 +19,24 @@
 #include "mnist.h"
 
 const char *kernel_source = 
-"kernel void compute(global float *input, const unsigned input_count, global float *output, global float *weights, global float *biases, const unsigned layer_size) {\n"
+"kernel void compute(global float *input, const unsigned input_count, global float *output, global float *weights, global float *bias, global float *error_term, const unsigned layer_size) {\n"
 "  int id = get_global_id(0);\n"
 "  if (id >= (int) layer_size) return;\n"
 "  output += id;\n"
-"  global float *weight = weights + id*input_count;\n"
+"  weights += id*input_count;\n"
+"  bias += id;\n"
+"  error_term += id;\n"
 "  float res = 0;\n"
 "  global const float *end = input + input_count;\n"
 "  while (input < end) {\n"
-//"printf(\"[%f %f] \", *input, *weight);\n" //debug
-"    res += (*input++) * (*weight++);\n"
+"    res += (*input++) * (*weights++);\n"
 "  }\n"
-"  res += *(biases + id);\n"
-"  *output = 1/(1+exp(-res));\n"
-"  printf(\"(res:%f output:%f) \", res, *output);\n" //debug
+"  res += *bias;\n"
+"  float raised = exp(-res);\n"
+"  res = 1/(1+raised);\n"
+"  *output = res;\n"
+"  *error_term = raised*res*res;\n"
+"  printf(\"(res:%f output:%f) \", *error_term, *output);\n" //debug
 "}\n"
 ;
 
@@ -41,13 +45,44 @@ float scaled_rand() {
 }
 
 typedef struct {
-  memory *inputs;
+  memory *inputs; // possibly a pointer to the output of another layer; this layer will not modify nor free it
+  
   /*
     the bias of the ith neuron is at (((float *) biases.ptr) + i)
     the jth weight of the ith neuron is at (((float *) weights.ptr) + i*inputs->length + j)
   */
   memory weights, biases;
+  
+  /*
+    the output of this layer called l, computed using σ(wˡaˡ⁻¹ + bˡ) where
+    σ(v) = 1/(1+exp(-v))
+    wˡ = weights of layer l
+    aˡ⁻¹ = output of layer l-1
+    bˡ = biases of layer l
+  */
   memory outputs;
+  
+  /*
+    THIS BUFFER IS USED MORE THAN ONCE, AND STORES AN INTERMIDIATE TERM BEFORE THE FINAL ANSWER.
+    furthermore, it is only used when a neural network is training, so use a different kernel if not
+    first, it stores sigmoid prime of weighted input in other words, σ′(zˡ) where
+    zˡ = wˡaˡ⁻¹ + bˡ
+    σ′(v) = exp(-v)/((1+exp(-v))^2)
+    this first value is computed in the same kernel as outputs for efficiency
+    second and finally, it stores error
+    if this is the output layer, it becomes ∇ₐC⊙σ′(zˡ) where
+    . ∇ₐC = (aᴸ - y) ASSUMING THE COST FUNCTION IS QUADRATIC COST where
+    aᴸ = the output of the final layer in the network
+    y = the expected output
+    if this is not the output layer, it becomes ((wˡ⁺¹)ᵀδˡ⁺¹)⊙σ′(zˡ) where
+    wˡ⁺¹ = weights of layer l+1
+    δˡ⁺¹ = error of layer l+1
+    σ′(zˡ) = what is currently kept here but about to be overwritten
+    in short: at first this is σ′(zˡ), then it becomes δˡ
+  */
+  memory error_term;
+  // TODO: a lot of data here only ever needs to live on the GPU, BUT currently keeps an unused buffer on the CPU side!
+  
   unsigned size; // number of neurons in this layer
 } layer;
 
@@ -60,6 +95,8 @@ int layer_init(layer *l, unsigned size, memory *inputs, cl_context context) {
   if (err) goto err_biases_init;
   err = mem_init(&l->outputs, size, sizeof(float), 0, context);
   if (err) goto err_output_init;
+  err = mem_init(&l->error_term, size, sizeof(float), 0, context);
+  if (err) goto err_error_term_init;
   l->inputs = inputs;
   l->size = size;
   
@@ -72,6 +109,8 @@ int layer_init(layer *l, unsigned size, memory *inputs, cl_context context) {
   
   return 0;
   
+err_error_term_init:
+  mem_destroy(&l->outputs);
 err_output_init:
   mem_destroy(&l->biases);
 err_biases_init:
@@ -164,7 +203,9 @@ int layer_compute(layer *l, size_t max_workgroup_size, cl_command_queue commands
   if (err) return err;
   err = clSetKernelArg(kernel, 4, sizeof(cl_mem), &l->biases.buf);
   if (err) return err;
-  err = clSetKernelArg(kernel, 5, sizeof(unsigned), &l->size);
+  err = clSetKernelArg(kernel, 5, sizeof(cl_mem), &l->error_term.buf);
+  if (err) return err;
+  err = clSetKernelArg(kernel, 6, sizeof(unsigned), &l->size);
   if (err) return err;
   
   return clEnqueueNDRangeKernel(commands, kernel, 1, NULL, &total_workgroup_size, &max_workgroup_size, 0, NULL, NULL);
@@ -196,6 +237,14 @@ float partial_quadratic_cost(float *expected, float *result, unsigned length) {
   }
   return sum/2.0;
 }
+
+/*
+int network_train(network *n, mnist_data *data, unsigned data_length, size_t max_workgroup_size, cl_command_queue commands, cl_kernel kernel) {
+  for (mnist_data *cur = data; cur < data + data_length; cur++) {
+    
+  }
+}
+*/
 
 #define PANIC(msg, code) { printf("%s failed with error code %d.\n", msg, code); exit(-1); }
 
