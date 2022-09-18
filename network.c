@@ -18,30 +18,26 @@
 #define MNIST_FLOAT
 #include "mnist.h"
 
-const char *kernel_source = 
-"kernel void compute(global float *input, const unsigned input_count, global float *output, global float *weights, global float *bias, global float *error_term, const unsigned layer_size) {\n"
-"  int id = get_global_id(0);\n"
-"  if (id >= (int) layer_size) return;\n"
-"  output += id;\n"
-"  weights += id*input_count;\n"
-"  bias += id;\n"
-"  error_term += id;\n"
-"  float res = 0;\n"
-"  global const float *end = input + input_count;\n"
-"  while (input < end) {\n"
-"    res += (*input++) * (*weights++);\n"
-"  }\n"
-"  res += *bias;\n"
-"  float raised = exp(-res);\n"
-"  res = 1/(1+raised);\n"
-"  *output = res;\n"
-"  *error_term = raised*res*res;\n"
-"  printf(\"(res:%f output:%f) \", *error_term, *output);\n" //debug
-"}\n"
-;
-
 float scaled_rand() {
   return 2*(rand()/(float) RAND_MAX - 0.5);
+}
+
+char* read_all(const char *filename) {
+  FILE *fp = fopen(filename, "r");
+  if (!fp) return NULL;
+  
+  fseek(fp, 0, SEEK_END);
+  size_t length = ftell(fp);
+  
+  char *buf = malloc(length + 1);
+  if (buf) {
+    rewind(fp);
+    fread(buf, 1, length, fp);
+    buf[length] = '\0';
+  }
+  
+  fclose(fp);
+  return buf;
 }
 
 typedef struct {
@@ -80,8 +76,7 @@ typedef struct {
     σ′(zˡ) = what is currently kept here but about to be overwritten
     in short: at first this is σ′(zˡ), then it becomes δˡ
   */
-  memory error_term;
-  // TODO: a lot of data here only ever needs to live on the GPU, BUT currently keeps an unused buffer on the CPU side!
+  memory error_term; // TODO: this is only ever needs to live on the GPU, BUT currently keeps an unused buffer on the CPU side!
   
   unsigned size; // number of neurons in this layer
 } layer;
@@ -122,6 +117,7 @@ void layer_destroy(layer *l) {
   mem_destroy(&l->outputs);
   mem_destroy(&l->biases);
   mem_destroy(&l->weights);
+  mem_destroy(&l->error_term);
 }
 
 typedef struct {
@@ -177,6 +173,8 @@ void network_destroy(network *n) {
 
 int network_prep_neuron_params(network *n, cl_command_queue commands) {
   int err = 0;
+  err = mem_write_buffer(n->layers[0].inputs, commands, CL_FALSE); // should this guy really be here or left up to the caller?
+  if (err) return err;
   for (layer *cur = n->layers; cur < n->layers + n->size; cur++) {
     err = mem_write_buffer(&cur->weights, commands, CL_FALSE);
     if (err) break;
@@ -215,9 +213,6 @@ int network_compute(network *n, size_t max_workgroup_size, cl_command_queue comm
   int err;
   layer *cur = n->layers;
   
-  err = mem_write_buffer(cur->inputs, commands, CL_TRUE);
-  if (err) return err;
-  
   for (; cur < n->layers + n->size; cur++) {
     err = layer_compute(cur, max_workgroup_size, commands, kernel);
     if (err) return err;
@@ -229,22 +224,75 @@ int network_compute(network *n, size_t max_workgroup_size, cl_command_queue comm
   return mem_read_buffer(&cur->outputs, commands, CL_TRUE);
 }
 
-float partial_quadratic_cost(float *expected, float *result, unsigned length) {
-  float sum = 0;
-  for (unsigned i = 0; i < length; i++) {
-    float diff = (*expected++) - (*result++);
-    sum += diff*diff;
-  }
-  return sum/2.0;
+int layer_finish_compute_err(layer *l, layer *next, size_t max_workgroup_size, cl_command_queue commands, cl_kernel kernel) {
+  int err;
+  
+  size_t total_workgroup_size = l->size;
+  total_workgroup_size += max_workgroup_size - total_workgroup_size%max_workgroup_size;
+  
+  err = clSetKernelArg(kernel, 0, sizeof(cl_mem), &l->error_term.buf);
+  if (err) return err;
+  err = clSetKernelArg(kernel, 1, sizeof(cl_mem), &next->weights.buf);
+  if (err) return err;
+  err = clSetKernelArg(kernel, 2, sizeof(cl_mem), &next->error_term.buf);
+  if (err) return err;
+  err = clSetKernelArg(kernel, 3, sizeof(unsigned), &l->size);
+  if (err) return err;
+  
+  return clEnqueueNDRangeKernel(commands, kernel, 1, NULL, &total_workgroup_size, &max_workgroup_size, 0, NULL, NULL);
 }
 
-/*
-int network_train(network *n, mnist_data *data, unsigned data_length, size_t max_workgroup_size, cl_command_queue commands, cl_kernel kernel) {
-  for (mnist_data *cur = data; cur < data + data_length; cur++) {
-    
+int network_compute_err(network *n, float *answer, size_t max_workgroup_size, cl_command_queue commands, cl_kernel kernel) {
+  int err;
+  layer *cur = n->layers + n->size - 1;
+  
+  /*
+    Since the final layer of the network is a special case, it is run on the CPU so I have to do less programming.
+    This is (probably) suboptimal and should be addressed by future me.
+    I also should figure out the overhead of running a kernel.
+  */
+  for (unsigned i = 0; i < cur->size; i++) {
+    float *term_addr = i + (float *) cur->error_term.ptr;
+    float cv = *term_addr;
+    *term_addr = cv * (*(i + (float *) cur->outputs.ptr) - answer[i]);
+    printf("(%f %f) ", cv, *term_addr);
   }
+  printf("\n\n");
+  err = mem_write_buffer(&cur->error_term, commands, CL_TRUE);
+  if (err) return err;
+  cur--;
+  
+  for (; cur >= n->layers; cur--) {
+    err = layer_finish_compute_err(cur, cur + 1, max_workgroup_size, commands, kernel);
+    if (err) return err;
+    clFinish(commands);
+  }
+  
+  return 0;
 }
-*/
+
+int network_train(network *n, mnist_data *data, unsigned data_length, size_t max_workgroup_size, cl_command_queue commands, cl_kernel layer_compute_kernel, cl_kernel layer_err_compute_kernel) {
+  int err = 0;
+  float answer[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  
+  for (mnist_data *cur = data; cur < data + data_length; cur++) {
+    int last_answer_index = cur->label;
+    answer[cur->label] = 1;
+    n->layers[0].inputs->ptr = &cur->data[0];
+    err = network_prep_neuron_params(n, commands);
+    if (err) return err;
+    err = network_compute(n, max_workgroup_size, commands, layer_compute_kernel);
+    if (err) return err;
+    err = network_compute_err(n, &answer[0], max_workgroup_size, commands, layer_err_compute_kernel);
+    if (err) return err;
+    //err = network_update_neurons();
+    //if (err) return err;
+    answer[last_answer_index] = 0;
+    return 0; //TODO: finish function and remove this debug line
+  }
+  
+  return err;
+}
 
 #define PANIC(msg, code) { printf("%s failed with error code %d.\n", msg, code); exit(-1); }
 
@@ -261,21 +309,28 @@ int main() {
   cl_command_queue commands = clCreateCommandQueueWithProperties(context, device_id, 0, &err);
   if (err) PANIC("clCreateCommandQueue", err);
   
+  char *kernel_source = read_all("./compute.cl");
+  if (!kernel_source) PANIC("read_all(\"./compute.cl\")", -28);
   cl_program program = clCreateProgramWithSource(context, 1, (const char **) &kernel_source, NULL, &err);
+  free(kernel_source);
   if (err) PANIC("clCreateProgramWithSource", err);
   
   err = clBuildProgram(program, 0, NULL, NULL, NULL, NULL);
   if (err) {
     size_t len = 0;
-    printf("%d ", clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, 0, NULL, &len));
+    err = clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, 0, NULL, &len);
+    if (err) PANIC("clBuildProgram, clGetProgramBuildInfo", err);
     char *buffer = malloc(len);
-    printf("%d\n", clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, len, buffer, NULL));
+    err = clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, len, buffer, NULL);
+    if (err) PANIC("clBuildProgram, clGetProgramBuildInfo", err);
     printf("%s\n", buffer);
     free(buffer);
     PANIC("clBuildProgram", err);
   }
   
-  cl_kernel kernel = clCreateKernel(program, "compute", &err);
+  cl_kernel layer_compute_kernel = clCreateKernel(program, "compute_output_and_err", &err);
+  if (err) PANIC("clCreateKernel", err);
+  cl_kernel layer_err_compute_kernel = clCreateKernel(program, "finish_err_compute", &err);
   if (err) PANIC("clCreateKernel", err);
   
   mnist_data *data;
@@ -300,17 +355,24 @@ int main() {
   err = network_init(&n, &input, &layer_sizes[0], context);
   
   size_t max_workgroup_size;
-  err = clGetKernelWorkGroupInfo(kernel, device_id, CL_KERNEL_WORK_GROUP_SIZE, sizeof(size_t), &max_workgroup_size, NULL);
+  // TODO: is the max_workgroup_size specific to a kernel? Would it differ between layer_compute_kernel and layer_err_compute_kernel?
+  err = clGetKernelWorkGroupInfo(layer_compute_kernel, device_id, CL_KERNEL_WORK_GROUP_SIZE, sizeof(size_t), &max_workgroup_size, NULL);
   if (err) PANIC("clGetKernelWorkGroupInfo", err);
   
+  /*
   err = network_prep_neuron_params(&n, commands);
   if (err) PANIC("network_prep_neuron_params", err);
-  err = network_compute(&n, max_workgroup_size, commands, kernel);
+  err = network_compute(&n, max_workgroup_size, commands, layer_compute_kernel);
   if (err) PANIC("network_compute", err);
+  */
+  
+  err = network_train(&n, data, data_count, max_workgroup_size, commands, layer_compute_kernel, layer_err_compute_kernel);
+  printf("%d\n", err);
   
   free(data);
   network_destroy(&n);
-  clReleaseKernel(kernel);
+  clReleaseKernel(layer_compute_kernel);
+  clReleaseKernel(layer_err_compute_kernel);
   clReleaseProgram(program);
   clReleaseCommandQueue(commands);
   clReleaseContext(context);

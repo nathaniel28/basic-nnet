@@ -3,6 +3,7 @@
 
 /*
  * MNIST loader by Nuri Park - https://github.com/projectgalateia/mnist
+ * Slightly modified edition™
  */
 
 #ifdef USE_MNIST_LOADER /* Fundamental macro to make the code active */
