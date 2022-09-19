@@ -230,14 +230,19 @@ int layer_finish_compute_err(layer *l, layer *next, size_t max_workgroup_size, c
   size_t total_workgroup_size = l->size;
   total_workgroup_size += max_workgroup_size - total_workgroup_size%max_workgroup_size;
   
+  //printf("\n\n%u -> %ld\n\n", l->size, total_workgroup_size);
+  
   err = clSetKernelArg(kernel, 0, sizeof(cl_mem), &l->error_term.buf);
   if (err) return err;
-  err = clSetKernelArg(kernel, 1, sizeof(cl_mem), &next->weights.buf);
+  err = clSetKernelArg(kernel, 1, sizeof(unsigned), &l->size);
   if (err) return err;
-  err = clSetKernelArg(kernel, 2, sizeof(cl_mem), &next->error_term.buf);
+  err = clSetKernelArg(kernel, 2, sizeof(cl_mem), &next->weights.buf);
   if (err) return err;
-  err = clSetKernelArg(kernel, 3, sizeof(unsigned), &l->size);
+  err = clSetKernelArg(kernel, 3, sizeof(cl_mem), &next->error_term.buf);
   if (err) return err;
+  err = clSetKernelArg(kernel, 4, sizeof(unsigned), &next->size);
+  if (err) return err;
+  
   
   return clEnqueueNDRangeKernel(commands, kernel, 1, NULL, &total_workgroup_size, &max_workgroup_size, 0, NULL, NULL);
 }
@@ -251,11 +256,12 @@ int network_compute_err(network *n, float *answer, size_t max_workgroup_size, cl
     This is (probably) suboptimal and should be addressed by future me.
     I also should figure out the overhead of running a kernel.
   */
+  err = mem_read_buffer(&cur->error_term, commands, CL_TRUE); // valgrind claims values in cur->error_term.ptr are still uninitialized after this opertation. why?
+  if (err) return err;
   for (unsigned i = 0; i < cur->size; i++) {
     float *term_addr = i + (float *) cur->error_term.ptr;
-    float cv = *term_addr;
-    *term_addr = cv * (*(i + (float *) cur->outputs.ptr) - answer[i]);
-    printf("(%f %f) ", cv, *term_addr);
+    *term_addr = (*term_addr) * (*(i + (float *) cur->outputs.ptr) - answer[i]);
+    printf("%f ", *term_addr);
   }
   printf("\n\n");
   err = mem_write_buffer(&cur->error_term, commands, CL_TRUE);
