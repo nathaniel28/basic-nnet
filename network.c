@@ -4,6 +4,8 @@
 //http://neuralnetworksanddeeplearning.com/chap1.html
 //http://neuralnetworksanddeeplearning.com/chap2.html
 
+#define NO_GPU
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -17,6 +19,11 @@
 #define USE_MNIST_LOADER
 #define MNIST_FLOAT
 #include "mnist.h"
+
+#ifdef NO_GPU
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#include "compute.cl"
+#endif
 
 float scaled_rand() {
   return 2*(rand()/(float) RAND_MAX - 0.5);
@@ -101,6 +108,11 @@ int layer_init(layer *l, unsigned size, memory *inputs, cl_context context) {
   for (float *cur = l->biases.ptr; cur < ((float *) l->biases.ptr) + l->biases.length; cur++) {
     *cur = scaled_rand();
   }
+#ifdef NO_GPU
+  for (float *cur = l->error_term.ptr; cur < ((float *) l->error_term.ptr) + l->error_term.length; cur++) {
+    *cur = 0;
+  }
+#endif
   
   return 0;
   
@@ -186,6 +198,13 @@ int network_prep_neuron_params(network *n, cl_command_queue commands) {
 }
 
 int layer_compute(layer *l, size_t max_workgroup_size, cl_command_queue commands, cl_kernel kernel) {
+#ifdef NO_GPU
+  fn_global_id = 0;
+  for (unsigned i = 0; i < l->size; i++) {
+    compute_output_and_err(l->inputs->ptr, l->inputs->length, l->outputs.ptr, l->weights.ptr, l->biases.ptr, l->error_term.ptr, l->size);
+  }
+  return 0;
+#else
   int err;
   
   size_t total_workgroup_size = l->size;
@@ -207,6 +226,7 @@ int layer_compute(layer *l, size_t max_workgroup_size, cl_command_queue commands
   if (err) return err;
   
   return clEnqueueNDRangeKernel(commands, kernel, 1, NULL, &total_workgroup_size, &max_workgroup_size, 0, NULL, NULL);
+#endif
 }
 
 int network_compute(network *n, size_t max_workgroup_size, cl_command_queue commands, cl_kernel kernel) {
@@ -216,15 +236,28 @@ int network_compute(network *n, size_t max_workgroup_size, cl_command_queue comm
   for (; cur < n->layers + n->size; cur++) {
     err = layer_compute(cur, max_workgroup_size, commands, kernel);
     if (err) return err;
+#ifndef NO_GPU
     clFinish(commands);
+#endif
     printf("\n\n"); //debug
   }
-  
+
+#ifdef NO_GPU
+  return 0;
+#else
   cur--;
   return mem_read_buffer(&cur->outputs, commands, CL_TRUE);
+#endif
 }
 
 int layer_finish_compute_err(layer *l, layer *next, size_t max_workgroup_size, cl_command_queue commands, cl_kernel kernel) {
+#ifdef NO_GPU
+  fn_global_id = 0;
+  for (unsigned i = 0; i < l->size; i++) {
+    finish_err_compute((float *) l->error_term.ptr, l->size, (float *) next->weights.ptr, (float *) next->error_term.ptr, next->size);
+  }
+  return 0;
+#else
   int err;
   
   size_t total_workgroup_size = l->size;
@@ -245,6 +278,7 @@ int layer_finish_compute_err(layer *l, layer *next, size_t max_workgroup_size, c
   
   
   return clEnqueueNDRangeKernel(commands, kernel, 1, NULL, &total_workgroup_size, &max_workgroup_size, 0, NULL, NULL);
+#endif
 }
 
 int network_compute_err(network *n, float *answer, size_t max_workgroup_size, cl_command_queue commands, cl_kernel kernel) {
@@ -256,8 +290,11 @@ int network_compute_err(network *n, float *answer, size_t max_workgroup_size, cl
     This is (probably) suboptimal and should be addressed by future me.
     I also should figure out the overhead of running a kernel.
   */
+#ifndef NO_GPU
   err = mem_read_buffer(&cur->error_term, commands, CL_TRUE); // valgrind claims values in cur->error_term.ptr are still uninitialized after this opertation. why?
   if (err) return err;
+#endif
+  
   for (unsigned i = 0; i < cur->size; i++) {
     float *term_addr = i + (float *) cur->error_term.ptr;
     *term_addr = (*term_addr) * (*(i + (float *) cur->outputs.ptr) - answer[i]);
@@ -271,7 +308,9 @@ int network_compute_err(network *n, float *answer, size_t max_workgroup_size, cl
   for (; cur >= n->layers; cur--) {
     err = layer_finish_compute_err(cur, cur + 1, max_workgroup_size, commands, kernel);
     if (err) return err;
+#ifndef NO_GPU
     clFinish(commands);
+#endif
   }
   
   return 0;
@@ -285,8 +324,10 @@ int network_train(network *n, mnist_data *data, unsigned data_length, size_t max
     int last_answer_index = cur->label;
     answer[cur->label] = 1;
     n->layers[0].inputs->ptr = &cur->data[0];
+#ifndef NO_GPU
     err = network_prep_neuron_params(n, commands);
     if (err) return err;
+#endif
     err = network_compute(n, max_workgroup_size, commands, layer_compute_kernel);
     if (err) return err;
     err = network_compute_err(n, &answer[0], max_workgroup_size, commands, layer_err_compute_kernel);
@@ -384,3 +425,7 @@ int main() {
   clReleaseContext(context);
   return 0;
 }
+
+#ifdef NO_GPU
+#pragma GCC diagnostic pop
+#endif

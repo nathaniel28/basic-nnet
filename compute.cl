@@ -1,15 +1,21 @@
-#ifdef C_CODE
+#ifdef NO_GPU
+#include <stdio.h>
+#include <math.h>
 #define kernel extern
 #define global
-extern int global_id;
-int get_global_id(int _) { return global_id++; }
+#define inline
+int fn_global_id;
+int get_global_id(int _) {
+  fn_global_id++;
+  return fn_global_id - 1;
+}
 #endif
 
 inline float fdot(global float *a, global float *b, size_t len) {
   float res = 0;
   global float *end = a + len;
   while (a < end) {
-    printf("[[%f %f]] ", *a, *b);
+    //printf("[[%f %f]] ", *a, *b);
     res += (*a++) * (*b++);
   }
   return res;
@@ -43,9 +49,14 @@ kernel void finish_err_compute(global float *error_term, const unsigned size, gl
   if (id >= (int) size) return; // should be size or next_size?
   error_term += id;
   next_weights += id*size; // this is being properly transposed or is already transposed, right?
-  next_error_terms += id;
   float res = fdot(next_weights, next_error_terms, next_size); // error somewhere here?
   
   *error_term = (*error_term) * res;
-  printf("(%f %f) ", *(next_weights + next_size - 1), *error_term);
+  printf("%f ", *error_term);
 }
+
+#ifdef NO_GPU
+#undef kernel
+#undef global
+#undef inline
+#endif
