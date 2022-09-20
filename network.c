@@ -301,8 +301,10 @@ int network_compute_err(network *n, float *answer, size_t max_workgroup_size, cl
     printf("%f ", *term_addr);
   }
   printf("\n\n");
+#ifndef NO_GPU
   err = mem_write_buffer(&cur->error_term, commands, CL_TRUE);
   if (err) return err;
+#endif
   cur--;
   
   for (; cur >= n->layers; cur--) {

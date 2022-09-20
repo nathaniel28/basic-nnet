@@ -46,10 +46,17 @@ kernel void compute_output_and_err(global float *input, const unsigned input_cou
 */
 kernel void finish_err_compute(global float *error_term, const unsigned size, global float *next_weights, global float *next_error_terms, const unsigned next_size) {
   int id = get_global_id(0);
-  if (id >= (int) size) return; // should be size or next_size?
+  if (id >= (int) size) return;
   error_term += id;
-  next_weights += id*size; // this is being properly transposed or is already transposed, right?
-  float res = fdot(next_weights, next_error_terms, next_size); // error somewhere here?
+  next_weights += id; // +id and using custom inline fdot for properly transposing this matrix
+  
+  float res = 0;
+  global float *end = next_error_terms + next_size;
+  while (next_error_terms < end) {
+    res += (*next_error_terms) * (*next_weights);
+    next_error_terms++;
+    next_weights += size;
+  }
   
   *error_term = (*error_term) * res;
   printf("%f ", *error_term);
