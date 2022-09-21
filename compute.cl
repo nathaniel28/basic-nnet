@@ -11,7 +11,7 @@ int get_global_id(int _) {
 }
 #endif
 
-inline float fdot(global float *a, global float *b, size_t len) {
+static inline float fdot(global float *a, global float *b, size_t len) {
   float res = 0;
   global float *end = a + len;
   while (a < end) {
@@ -25,7 +25,7 @@ inline float fdot(global float *a, global float *b, size_t len) {
   computes σ(wˡaˡ⁻¹ + bˡ) and σ′(wˡaˡ⁻¹ + bˡ)
   stored in *output and *error_term, respectively
 */
-kernel void compute_output_and_err(global float *input, const unsigned input_count, global float *output, global float *weights, global float *bias, global float *error_term, const unsigned layer_size) {
+kernel void compute_output_and_err_part(global float *input, const unsigned input_count, global float *output, global float *weights, global float *bias, global float *error_term, const unsigned layer_size) {
   int id = get_global_id(0);
   if (id >= (int) layer_size) return;
   output += id;
@@ -44,7 +44,7 @@ kernel void compute_output_and_err(global float *input, const unsigned input_cou
   *error_term must initially be equal to σ′(wˡaˡ⁻¹ + bˡ)
   computes ((wˡ⁺¹)ᵀδˡ⁺¹)⊙σ′(wˡaˡ⁻¹ + bˡ), stored in *error_term
 */
-kernel void finish_err_compute(global float *error_term, const unsigned size, global float *next_weights, global float *next_error_terms, const unsigned next_size) {
+kernel void backpropagate_err(global float *error_term, const unsigned size, global float *next_weights, global float *next_error_terms, const unsigned next_size) {
   int id = get_global_id(0);
   if (id >= (int) size) return;
   error_term += id;

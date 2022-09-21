@@ -4,11 +4,14 @@
 //http://neuralnetworksanddeeplearning.com/chap1.html
 //http://neuralnetworksanddeeplearning.com/chap2.html
 
-#define NO_GPU
+//#define NO_GPU
+/*
+  NO_GPU still uses OpenCL so that I don't have to make huge changes, it just does the work on the CPU instead of the GPU.
+  It's not for computers that don't have a GPU, it's for debugging, as valgrind only detects bad operations on the CPU.
+*/
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <math.h>
 
 #define CL_TARGET_OPENCL_VERSION 300
 #include <CL/cl.h>
@@ -82,8 +85,19 @@ typedef struct {
     δˡ⁺¹ = error of layer l+1
     σ′(zˡ) = what is currently kept here but about to be overwritten
     in short: at first this is σ′(zˡ), then it becomes δˡ
+    
+    TODO: error_term is only ever needs to keep memory on the GPU, BUT currently keeps an unused buffer on the CPU side!
+    ...HOWEVER, when NO_GPU is defined the memory on the CPU IS REQUIRED.
   */
-  memory error_term; // TODO: this is only ever needs to live on the GPU, BUT currently keeps an unused buffer on the CPU side!
+  memory error_term;
+  
+  /*
+    TODO: impliment
+    Store the sum of this layer's error over several training inputs
+    
+    TODO: as with error_term, this is only used in the GPU unless NO_GPU is defined.
+  */
+  //memory accumulated_error;
   
   unsigned size; // number of neurons in this layer
 } layer;
@@ -135,6 +149,7 @@ void layer_destroy(layer *l) {
 typedef struct {
   layer *layers;
   unsigned size;
+  float learning_rate;
 } network;
 
 int network_init(network *n, memory *input, unsigned *layer_sizes, cl_context context) {
@@ -201,7 +216,7 @@ int layer_compute(layer *l, size_t max_workgroup_size, cl_command_queue commands
 #ifdef NO_GPU
   fn_global_id = 0;
   for (unsigned i = 0; i < l->size; i++) {
-    compute_output_and_err(l->inputs->ptr, l->inputs->length, l->outputs.ptr, l->weights.ptr, l->biases.ptr, l->error_term.ptr, l->size);
+    compute_output_and_err_part(l->inputs->ptr, l->inputs->length, l->outputs.ptr, l->weights.ptr, l->biases.ptr, l->error_term.ptr, l->size);
   }
   return 0;
 #else
@@ -254,7 +269,7 @@ int layer_finish_compute_err(layer *l, layer *next, size_t max_workgroup_size, c
 #ifdef NO_GPU
   fn_global_id = 0;
   for (unsigned i = 0; i < l->size; i++) {
-    finish_err_compute((float *) l->error_term.ptr, l->size, (float *) next->weights.ptr, (float *) next->error_term.ptr, next->size);
+    backpropagate_err((float *) l->error_term.ptr, l->size, (float *) next->weights.ptr, (float *) next->error_term.ptr, next->size);
   }
   return 0;
 #else
@@ -377,9 +392,9 @@ int main() {
     PANIC("clBuildProgram", err);
   }
   
-  cl_kernel layer_compute_kernel = clCreateKernel(program, "compute_output_and_err", &err);
+  cl_kernel layer_compute_kernel = clCreateKernel(program, "compute_output_and_err_part", &err);
   if (err) PANIC("clCreateKernel", err);
-  cl_kernel layer_err_compute_kernel = clCreateKernel(program, "finish_err_compute", &err);
+  cl_kernel layer_err_compute_kernel = clCreateKernel(program, "backpropagate_err", &err);
   if (err) PANIC("clCreateKernel", err);
   
   mnist_data *data;
@@ -402,18 +417,13 @@ int main() {
   network n;
   unsigned layer_sizes[] = {15, 10, 0};
   err = network_init(&n, &input, &layer_sizes[0], context);
+  // move the following to network_init?
+  n.learning_rate = 0.03;
   
   size_t max_workgroup_size;
   // TODO: is the max_workgroup_size specific to a kernel? Would it differ between layer_compute_kernel and layer_err_compute_kernel?
   err = clGetKernelWorkGroupInfo(layer_compute_kernel, device_id, CL_KERNEL_WORK_GROUP_SIZE, sizeof(size_t), &max_workgroup_size, NULL);
   if (err) PANIC("clGetKernelWorkGroupInfo", err);
-  
-  /*
-  err = network_prep_neuron_params(&n, commands);
-  if (err) PANIC("network_prep_neuron_params", err);
-  err = network_compute(&n, max_workgroup_size, commands, layer_compute_kernel);
-  if (err) PANIC("network_compute", err);
-  */
   
   err = network_train(&n, data, data_count, max_workgroup_size, commands, layer_compute_kernel, layer_err_compute_kernel);
   printf("%d\n", err);
