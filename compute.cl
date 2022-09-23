@@ -37,14 +37,15 @@ kernel void compute_output_and_err_part(global float *input, const unsigned inpu
   res = 1/(1+raised);
   *output = res;
   *error_term = raised*res*res;
-  printf("(res:%f output:%f) ", *error_term, *output);
+  //printf("(res:%f output:%f) ", *error_term, *output);
 }
 
 /*
   *error_term must initially be equal to σ′(wˡaˡ⁻¹ + bˡ)
   computes ((wˡ⁺¹)ᵀδˡ⁺¹)⊙σ′(wˡaˡ⁻¹ + bˡ), stored in *error_term
+  adds above to *accumulated_error
 */
-kernel void backpropagate_err(global float *error_term, const unsigned size, global float *next_weights, global float *next_error_terms, const unsigned next_size) {
+kernel void backpropagate_err(global float *error_term, global float *accumulated_error, const unsigned size, global float *next_weights, global float *next_error_terms, const unsigned next_size) {
   int id = get_global_id(0);
   if (id >= (int) size) return;
   error_term += id;
@@ -57,9 +58,39 @@ kernel void backpropagate_err(global float *error_term, const unsigned size, glo
     next_error_terms++;
     next_weights += size;
   }
+  res *= *error_term;
   
-  *error_term = (*error_term) * res;
-  printf("%f ", *error_term);
+  *error_term = res; // TODO: error_term is not used after this, only accumulated error is (as of now). remove this write operation? If so, change error_term's name to something like "sigmoid prime output" or something as that would be it's only purpose. If so, also update documentation above it's declairation in the layer struct too!
+  *accumulated_error += res;
+  //printf("%f ", res);
+}
+
+
+/*
+  TODO: description
+  ∂C/∂bˡⱼ=δˡⱼ
+  ∂C/∂wˡⱼₖ=aˡ⁻¹ₖδˡⱼ
+*/
+kernel void update_neurons(global float *weights, global float *bias, global float *accumulated_error, const unsigned size, global float *prev_output, const unsigned prev_size, const float learning_rate, const unsigned mini_batch_size) {
+  int id = get_global_id(0);
+  if (id >= (int) size) return;
+  
+  float coefficient = learning_rate/((float) mini_batch_size);
+  
+  global float *end = accumulated_error + size;
+  while (accumulated_error < end) {
+    global float *w_end = weights + prev_size;
+    while (weights < w_end) {
+      *weights = *weights - coefficient * (*prev_output) * (*accumulated_error);
+      weights++;
+      prev_output++;
+    }
+    prev_output -= prev_size;
+    
+    *bias = *bias - coefficient * (*accumulated_error);
+    bias++;
+    accumulated_error++;
+  }
 }
 
 #ifdef NO_GPU
