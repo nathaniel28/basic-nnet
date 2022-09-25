@@ -230,7 +230,11 @@ void network_compute(network *n) {
       float *error_term = ((float *) cur->error_term.ptr) + id;
       float res = fdot(cur->inputs->ptr, weights, cur->inputs->length) + *bias;
       float raised = exp(-res);
-      res = 1/(1+raised);
+      if (isnan(raised)) {
+        res = 0;
+      } else {
+        res = 1/(1+raised);
+      }
       *output = res;
       *error_term = raised*res*res;
     }
@@ -240,12 +244,27 @@ void network_compute(network *n) {
 void network_compute_err(network *n, float *answer) {
   layer *cur = n->layers + n->size - 1;
   
-  for (unsigned i = 0; i < cur->size; i++) {
-    float *term_addr = i + (float *) cur->error_term.ptr;
-    *term_addr = (*term_addr) * (*(i + (float *) cur->outputs.ptr) - answer[i]);
+  for (unsigned id = 0; id < cur->size; id++) {
+    float *error_term = (float *) cur->error_term.ptr + id;
+    float *bias_error = ((float *) cur->bias_error.ptr) + id;
+    
+    float res = *(id + (float *) cur->outputs.ptr) - answer[id];
+    res *= *error_term;
+    
+    *error_term = res;
+    *bias_error += res;
+    
+    float *weight_error = ((float *) cur->weight_error.ptr) + id*cur->size;
+    float *c_prev_input = (float *) cur->inputs->ptr;
+    float *w_end = weight_error + cur->inputs->length;
+    while (weight_error < w_end) {
+      *weight_error += res * (*c_prev_input);
+      weight_error++;
+      c_prev_input++;
+    }
     //printf("%f ", *term_addr);
   }
-  //printf("\n\n");
+  //printf("\n");
   cur--;
   
   for (; cur >= n->layers; cur--) {
@@ -266,7 +285,9 @@ void network_compute_err(network *n, float *answer) {
       }
       res *= *error_term;
       
-      *error_term = res; // TODO: error_term is not used after this, only accumulated error is (as of now). remove this write operation? If so, change error_term's name to something like "sigmoid prime output" or something as that would be it's only purpose. If so, also update documentation above it's declairation in the layer struct too!
+      //printf("%f ", res);
+      
+      *error_term = res; //error_term will be used by the previous layer
       *bias_error += res;
       
       float *weight_error = ((float *) cur->weight_error.ptr) + id*cur->size;
@@ -278,6 +299,7 @@ void network_compute_err(network *n, float *answer) {
         c_prev_input++;
       }
     }
+    //printf("\n");
   }
 }
 
@@ -314,10 +336,10 @@ void network_train(network *n, mnist_data **data, unsigned data_length, float le
   
   mnist_data **cur = data;
   
-  int iterations_remaining = 23; //debug variable
+  //int iterations_remaining = 462; //debug variable
   
   for (mnist_data **end = data + mini_batch_size; end <= data + data_length; end += mini_batch_size) {
-    if (!iterations_remaining--) return; //debug
+    //if (!iterations_remaining--) return; //debug
     unsigned num_correct = 0;
     for (; cur < end; cur++) {
       int last_answer_index = (*cur)->label;
