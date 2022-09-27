@@ -221,6 +221,10 @@ void network_destroy(network *n) {
   free(n->layers);
 }
 
+/*
+  stores σ(wˡaˡ⁻¹ + bˡ) in *outputs for each neuron in each layer
+  stores wˡaˡ⁻¹ + bˡ in *error_term for each neuron in each layer, NOTE: this is not yet δ, this is just z
+*/
 void network_compute(network *n) {
   for (layer *cur = n->layers; cur < n->layers + n->size; cur++) {
     for (unsigned id = 0; id < cur->size; id++) {
@@ -231,16 +235,22 @@ void network_compute(network *n) {
       float res = fdot(cur->inputs->ptr, weights, cur->inputs->length) + *bias;
       float raised = exp(-res);
       if (isnan(raised)) {
-        res = 0;
+        *output = 0;
+        *error_term = 0;
       } else {
         res = 1/(1+raised);
+        *output = res;
+        *error_term = raised*res*res;
       }
-      *output = res;
-      *error_term = raised*res*res;
     }
   }
 }
 
+/*
+  stores ∇ₐC⊙σ′(zˡ) in *error_term for each neuron in each layer if layer l is the network's final layer
+  otherwise stores ((wˡ⁺¹)ᵀδˡ⁺¹)⊙σ′(zˡ) in *error_term for each neuron in each layer
+  NOTE: error_term initially stores z as computed in network_compute
+*/
 void network_compute_err(network *n, float *answer) {
   layer *cur = n->layers + n->size - 1;
   
@@ -248,21 +258,21 @@ void network_compute_err(network *n, float *answer) {
     float *error_term = (float *) cur->error_term.ptr + id;
     float *bias_error = ((float *) cur->bias_error.ptr) + id;
     
-    float res = *(id + (float *) cur->outputs.ptr) - answer[id];
-    res *= *error_term;
+    float error = *(id + (float *) cur->outputs.ptr) - answer[id];
+    error *= *error_term;
     
-    *error_term = res;
-    *bias_error += res;
+    *error_term = error;
+    *bias_error += error;
     
     float *weight_error = ((float *) cur->weight_error.ptr) + id*cur->size;
     float *c_prev_input = (float *) cur->inputs->ptr;
     float *w_end = weight_error + cur->inputs->length;
     while (weight_error < w_end) {
-      *weight_error += res * (*c_prev_input);
+      *weight_error += error * (*c_prev_input);
       weight_error++;
       c_prev_input++;
     }
-    //printf("%f ", *term_addr);
+    //printf("%f ", error);
   }
   //printf("\n");
   cur--;
@@ -275,26 +285,26 @@ void network_compute_err(network *n, float *answer) {
       float *bias_error = ((float *) cur->bias_error.ptr) + id;
       float *next_weights = ((float *) next->weights.ptr) + id; // +id and using custom inline fdot for properly transposing this matrix
       
-      float res = 0;
+      float error = 0;
       float *c_error_term = (float *) next->error_term.ptr;
       float *end = c_error_term + next->size;
       while (c_error_term < end) {
-        res += (*c_error_term) * (*next_weights);
+        error += (*c_error_term) * (*next_weights);
         c_error_term++;
         next_weights += cur->size;
       }
-      res *= *error_term;
+      error *= *error_term;
       
       //printf("%f ", res);
       
-      *error_term = res; //error_term will be used by the previous layer
-      *bias_error += res;
+      *error_term = error; //error_term will be used by the previous layer
+      *bias_error += error;
       
       float *weight_error = ((float *) cur->weight_error.ptr) + id*cur->size;
       float *c_prev_input = (float *) cur->inputs->ptr;
       float *w_end = weight_error + cur->inputs->length;
       while (weight_error < w_end) {
-        *weight_error += res * (*c_prev_input);
+        *weight_error += error * (*c_prev_input);
         weight_error++;
         c_prev_input++;
       }
@@ -398,7 +408,7 @@ int main() {
   unsigned layer_sizes[] = {15, 10, 0};
   network_init(&n, &input, &layer_sizes[0]);
   
-  float learning_rate = 3.0;
+  float learning_rate = 1.0;
   unsigned mini_batch_size = 10;
   network_train(&n, shuffled, data_count, learning_rate, mini_batch_size);
   
