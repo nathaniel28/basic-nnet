@@ -1,5 +1,5 @@
 
-CFLAGS=-g -Wall -Wextra
+CFLAGS=-g -Wall -Wextra -pg
 LIBS=-lm -lOpenCL
 
 all::

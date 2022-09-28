@@ -175,6 +175,15 @@ typedef struct {
   unsigned size;
 } network;
 
+void debug_print_input(network *n) {
+  memory *input = n->layers[0].inputs;
+  for (unsigned i = 0; i < input->length; i++) {
+    if (i % 28 == 0) printf("\n");
+    printf("%c", *(((float *) input->ptr) + i) >= 0.5 ? '1' : '0');
+  }
+  printf("\n");
+}
+
 int network_init(network *n, memory *input, unsigned *layer_sizes) {
   int err = 0;
   
@@ -228,8 +237,28 @@ void network_destroy(network *n) {
 void network_compute(network *n) {
   for (layer *cur = n->layers; cur < n->layers + n->size; cur++) {
     for (unsigned id = 0; id < cur->size; id++) {
+      
+      /*
+      //debug
+      unsigned zero_counter = 0;
+      for (size_t i = 0; i < cur->weight_error.length; i++) {
+        float v = *(((float *) cur->weight_error.ptr) + i);
+        if (v == 0.) {
+          zero_counter++;
+        } else {
+          if (zero_counter) {
+            printf("<%u zero%s> ", zero_counter, zero_counter == 1 ? "" : "s");
+            zero_counter = 0;
+          }
+          printf("%f ", v);
+        }
+      }
+      if (zero_counter) printf("<%u zero%s> ", zero_counter, zero_counter == 1 ? "" : "s");
+      printf("\n");
+      */
+      
       float *output = ((float *) cur->outputs.ptr) + id;
-      float *weights = ((float *) cur->weights.ptr) + id*cur->inputs->length;
+      float *weights = ((float *) cur->weights.ptr) + id*cur->size;
       float *bias = ((float *) cur->biases.ptr) + id;
       float *error_term = ((float *) cur->error_term.ptr) + id;
       float res = fdot(cur->inputs->ptr, weights, cur->inputs->length) + *bias;
@@ -407,6 +436,7 @@ int main() {
   network n;
   unsigned layer_sizes[] = {15, 10, 0};
   network_init(&n, &input, &layer_sizes[0]);
+  //debug_print_input(&n);
   
   float learning_rate = 1.0;
   unsigned mini_batch_size = 10;
