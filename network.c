@@ -43,21 +43,16 @@ char* read_all(const char *filename) {
   return buf;
 }
 
-mnist_data** shuffle_data(mnist_data *data, unsigned data_length) {
-  mnist_data **res = malloc(sizeof(mnist_data *)*data_length);
-  if (!res) return NULL;
-  
-  for (mnist_data **cur = res; cur < res + data_length; cur++) {
+void shuffle_data(mnist_data **buf, mnist_data *data, unsigned data_length) {
+  for (mnist_data **cur = buf; cur < buf + data_length; cur++) {
     *cur = data++;
   }
-  for (mnist_data **cur = res; cur < res + data_length; cur++) {
-    mnist_data **r = res + rand()%data_length;
+  for (mnist_data **cur = buf; cur < buf + data_length; cur++) {
+    mnist_data **r = buf + rand()%data_length;
     mnist_data *tmp = *r;
     *r = *cur;
     *cur = tmp;
   }
-  
-  return res;
 }
 
 typedef struct {
@@ -237,26 +232,6 @@ void network_destroy(network *n) {
 void network_compute(network *n) {
   for (layer *cur = n->layers; cur < n->layers + n->size; cur++) {
     for (unsigned id = 0; id < cur->size; id++) {
-      
-      /*
-      //debug
-      unsigned zero_counter = 0;
-      for (size_t i = 0; i < cur->weight_error.length; i++) {
-        float v = *(((float *) cur->weight_error.ptr) + i);
-        if (v == 0.) {
-          zero_counter++;
-        } else {
-          if (zero_counter) {
-            printf("<%u zero%s> ", zero_counter, zero_counter == 1 ? "" : "s");
-            zero_counter = 0;
-          }
-          printf("%f ", v);
-        }
-      }
-      if (zero_counter) printf("<%u zero%s> ", zero_counter, zero_counter == 1 ? "" : "s");
-      printf("\n");
-      */
-      
       float *output = ((float *) cur->outputs.ptr) + id;
       float *weights = ((float *) cur->weights.ptr) + id*cur->size;
       float *bias = ((float *) cur->biases.ptr) + id;
@@ -320,7 +295,7 @@ void network_compute_err(network *n, float *answer) {
       while (c_error_term < end) {
         error += (*c_error_term) * (*next_weights);
         c_error_term++;
-        next_weights += cur->size;
+        next_weights += next->size;
       }
       error *= *error_term;
       
@@ -375,26 +350,16 @@ void network_train(network *n, mnist_data **data, unsigned data_length, float le
   
   mnist_data **cur = data;
   
-  //int iterations_remaining = 462; //debug variable
-  
   for (mnist_data **end = data + mini_batch_size; end <= data + data_length; end += mini_batch_size) {
-    //if (!iterations_remaining--) return; //debug
-    unsigned num_correct = 0;
+    //unsigned num_correct = 0;
     for (; cur < end; cur++) {
       int last_answer_index = (*cur)->label;
       answer[last_answer_index] = 1;
       n->layers[0].inputs->ptr = &(*cur)->data[0][0];
       
-      /*
-      for (unsigned i = 0; i < n->layers[0].inputs->length; i++) {
-        if (i % 28 == 0) printf("\n");
-        printf("%c", *(((float *) n->layers[0].inputs->ptr) + i) >= 0.5 ? '1' : '0');
-      }
-      printf("\n");
-      */
-      
       network_compute(n);
       
+      /*
       printf("label: %d output: [", last_answer_index);
       layer *last = &n->layers[n->size-1];
       int guess = -1;
@@ -409,41 +374,78 @@ void network_train(network *n, mnist_data **data, unsigned data_length, float le
       }
       printf("\b] guess: %d\n", guess);
       if (guess == last_answer_index) num_correct++;
+      */
       
       network_compute_err(n, &answer[0]);
       answer[last_answer_index] = 0;
     }
-    printf("%u/%u\n", num_correct, mini_batch_size);
+    //printf("%u/%u\n", num_correct, mini_batch_size);
     network_update_neurons(n, learning_rate, mini_batch_size);
+  }
+}
+
+unsigned network_eval(network *n, mnist_data *data, unsigned data_length) {
+  unsigned num_correct = 0;
+  for (mnist_data *cur = data; cur < data + data_length; cur++) {
+    n->layers[0].inputs->ptr = &cur->data[0][0];
+    network_compute(n); // TODO: function that does not compute error as it is not used during evaluation
+    layer *last = &n->layers[n->size-1];
+    unsigned guess = 0;
+    float max = *(float *) last->outputs.ptr;
+    for (unsigned i = 1; i < last->size; i++) {
+      float out = *(((float *) last->outputs.ptr) + i);
+      if (out > max) {
+        guess = i;
+        max = out;
+      }
+    }
+    if (guess == cur->label) num_correct++;
+  }
+  return num_correct;
+}
+
+void network_repeat_train(network *n, mnist_data *data, mnist_data **shuffled_buf, unsigned data_length, float learning_rate, unsigned mini_batch_size, unsigned epochs, mnist_data *eval_data, unsigned eval_data_length) {
+  while (epochs--) {
+    shuffle_data(shuffled_buf, data, data_length);
+    network_train(n, shuffled_buf, data_length, learning_rate, mini_batch_size);
+    printf("%u/%u\n", network_eval(n, eval_data, eval_data_length), eval_data_length);
   }
 }
 
 #define PANIC(msg, code) { printf("%s failed with error code %d.\n", msg, code); exit(-1); }
 
 int main() {
+  srand(11);
+
   mnist_data *data;
-  unsigned data_count;
-  int err = mnist_load("data/train-images.idx3-ubyte", "data/train-labels.idx1-ubyte", &data, &data_count);
+  unsigned data_length;
+  int err = mnist_load("data/train-images.idx3-ubyte", "data/train-labels.idx1-ubyte", &data, &data_length);
   if (err) PANIC("mnist_load", err);
   memory input;
-  input.ptr = &data[0].data[0];
   input.length = 28*28;
   input.unit_size = sizeof(float);
   
-  mnist_data **shuffled = shuffle_data(data, data_count);
-  if (!shuffled) PANIC("shuffle_data", -1);
+  mnist_data **shuffled_buf = malloc(sizeof(mnist_data *)*data_length);
+  if (!shuffled_buf) PANIC("malloc", -1);
+  
+  mnist_data *eval_data;
+  unsigned eval_data_length;
+  err = mnist_load("data/t10k-images.idx3-ubyte", "data/t10k-labels.idx1-ubyte", &eval_data, &eval_data_length);
+  if (err) PANIC("mnist_load", err);
   
   network n;
   unsigned layer_sizes[] = {15, 10, 0};
   network_init(&n, &input, &layer_sizes[0]);
   //debug_print_input(&n);
   
-  float learning_rate = 1.0;
-  unsigned mini_batch_size = 10;
-  network_train(&n, shuffled, data_count, learning_rate, mini_batch_size);
+  float learning_rate = 1.;
+  unsigned mini_batch_size = 20;
+  unsigned num_epochs = 1;
+  network_repeat_train(&n, data, shuffled_buf, data_length, learning_rate, mini_batch_size, num_epochs, eval_data, eval_data_length);
   
   free(data);
-  free(shuffled);
+  free(shuffled_buf);
+  free(eval_data);
   network_destroy(&n);
   return 0;
 }
