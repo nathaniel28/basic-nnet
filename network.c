@@ -101,8 +101,8 @@ typedef struct {
     
     TODO: as with error_term, this is only used in the GPU unless NO_GPU is defined.
   */
-  memory bias_error; // adding this now (did a ctrl+h to replace it's previous name accumulated_error
-  memory weight_error; // adding this now
+  memory bias_error;
+  memory weight_error;
   
   unsigned size; // number of neurons in this layer
 } layer;
@@ -112,7 +112,7 @@ int layer_init(layer *l, unsigned size, memory *inputs) {
   
   err = mem_init(&l->weights, inputs->length*size, sizeof(float));
   if (err) return err;
-  err = mem_init(&l->biases, inputs->length, sizeof(float));
+  err = mem_init(&l->biases, size, sizeof(float));
   if (err) goto err_biases_init;
   err = mem_init(&l->outputs, size, sizeof(float));
   if (err) goto err_output_init;
@@ -179,6 +179,39 @@ void debug_print_input(network *n) {
   printf("\n");
 }
 
+void debug_print_network(network *n) {
+  for (layer *cur = n->layers; cur < n->layers + n->size; cur++) {
+    if (cur != n->layers + n->size - 1) continue; // temp for less output
+    printf("inputs\n");
+    for (float *c_input = cur->inputs->ptr; c_input < ((float *) cur->inputs->ptr) + cur->inputs->length; c_input++) {
+      printf("%f\t", *c_input);
+    }
+    printf("\n");
+    
+    printf("weights\n");
+    for (float *w_begin = cur->weights.ptr; w_begin < ((float *) cur->weights.ptr) + cur->weights.length;) {
+      float *c_weights = w_begin;
+      for (; c_weights < w_begin + cur->inputs->length; c_weights++) {
+        printf("%f\t", *c_weights);
+      }
+      printf("\n");
+      w_begin = c_weights;
+    }
+    
+    printf("biases\n");
+    for (float *c_bias = cur->biases.ptr; c_bias < ((float *) cur->biases.ptr) + cur->biases.length; c_bias++) {
+      printf("%f\t", *c_bias);
+    }
+    printf("\n");
+    
+    printf("outputs\n");
+    for (float *c_output = cur->outputs.ptr; c_output < ((float *) cur->outputs.ptr) + cur->outputs.length; c_output++) {
+      printf("%f\t", *c_output);
+    }
+    printf("\n");
+  }
+}
+
 int network_init(network *n, memory *input, unsigned *layer_sizes) {
   int err = 0;
   
@@ -233,7 +266,7 @@ void network_compute(network *n) {
   for (layer *cur = n->layers; cur < n->layers + n->size; cur++) {
     for (unsigned id = 0; id < cur->size; id++) {
       float *output = ((float *) cur->outputs.ptr) + id;
-      float *weights = ((float *) cur->weights.ptr) + id*cur->size;
+      float *weights = ((float *) cur->weights.ptr) + id*cur->inputs->length;
       float *bias = ((float *) cur->biases.ptr) + id;
       float *error_term = ((float *) cur->error_term.ptr) + id;
       float res = fdot(cur->inputs->ptr, weights, cur->inputs->length) + *bias;
@@ -259,7 +292,7 @@ void network_compute_err(network *n, float *answer) {
   layer *cur = n->layers + n->size - 1;
   
   for (unsigned id = 0; id < cur->size; id++) {
-    float *error_term = (float *) cur->error_term.ptr + id;
+    float *error_term = ((float *) cur->error_term.ptr) + id;
     float *bias_error = ((float *) cur->bias_error.ptr) + id;
     
     float error = *(id + (float *) cur->outputs.ptr) - answer[id];
@@ -268,9 +301,9 @@ void network_compute_err(network *n, float *answer) {
     *error_term = error;
     *bias_error += error;
     
-    float *weight_error = ((float *) cur->weight_error.ptr) + id*cur->size;
+    float *weight_error = ((float *) cur->weight_error.ptr) + id*cur->inputs->length; // note
     float *c_prev_input = (float *) cur->inputs->ptr;
-    float *w_end = weight_error + cur->inputs->length;
+    float *w_end = weight_error + cur->inputs->length; // note
     while (weight_error < w_end) {
       *weight_error += error * (*c_prev_input);
       weight_error++;
@@ -290,12 +323,12 @@ void network_compute_err(network *n, float *answer) {
       float *next_weights = ((float *) next->weights.ptr) + id; // +id and using custom inline fdot for properly transposing this matrix
       
       float error = 0;
-      float *c_error_term = (float *) next->error_term.ptr;
-      float *end = c_error_term + next->size;
-      while (c_error_term < end) {
-        error += (*c_error_term) * (*next_weights);
-        c_error_term++;
-        next_weights += next->size;
+      float *c_next_error_term = (float *) next->error_term.ptr;
+      float *end = c_next_error_term + next->size; // note
+      while (c_next_error_term < end) {
+        error += (*c_next_error_term) * (*next_weights);
+        c_next_error_term++;
+        next_weights += cur->size; // note
       }
       error *= *error_term;
       
@@ -304,7 +337,7 @@ void network_compute_err(network *n, float *answer) {
       *error_term = error; //error_term will be used by the previous layer
       *bias_error += error;
       
-      float *weight_error = ((float *) cur->weight_error.ptr) + id*cur->size;
+      float *weight_error = ((float *) cur->weight_error.ptr) + id*cur->inputs->length;
       float *c_prev_input = (float *) cur->inputs->ptr;
       float *w_end = weight_error + cur->inputs->length;
       while (weight_error < w_end) {
@@ -321,26 +354,24 @@ void network_update_neurons(network *n, float learning_rate, unsigned mini_batch
   float coefficient = learning_rate/((float) mini_batch_size);
   
   for (layer *cur = n->layers; cur < n->layers + n->size; cur++) {
-    for (unsigned i = 0; i < cur->size; i++) {
-      float *weight_error = (float *) cur->weight_error.ptr;
-      float *weight = (float *) cur->weights.ptr;
-      float *w_end = weight + cur->inputs->length*cur->size;
-      while (weight < w_end) {
-        *weight = *weight - coefficient * (*weight_error);
-        *weight_error = 0;
-        weight++;
-        weight_error++;
-      }
-      
-      float *bias_error = (float *) cur->bias_error.ptr;
-      float *bias = (float *) cur->biases.ptr;
-      float *b_end = bias + cur->size;
-      while (bias < b_end) {
-        *bias = *bias - coefficient * (*bias_error);
-        *bias_error = 0;
-        bias++;
-        bias_error++;
-      }
+    float *weight_error = (float *) cur->weight_error.ptr;
+    float *weight = (float *) cur->weights.ptr;
+    float *w_end = weight + cur->inputs->length*cur->size;
+    while (weight < w_end) {
+      *weight = *weight - coefficient * (*weight_error);
+      *weight_error = 0;
+      weight++;
+      weight_error++;
+    }
+    
+    float *bias_error = (float *) cur->bias_error.ptr;
+    float *bias = (float *) cur->biases.ptr;
+    float *b_end = bias + cur->size;
+    while (bias < b_end) {
+      *bias = *bias - coefficient * (*bias_error);
+      *bias_error = 0;
+      bias++;
+      bias_error++;
     }
   }
 }
@@ -359,6 +390,8 @@ void network_train(network *n, mnist_data **data, unsigned data_length, float le
       
       network_compute(n);
       
+      //debug_print_network(n);
+      //exit(1); // debug temp
       /*
       printf("label: %d output: [", last_answer_index);
       layer *last = &n->layers[n->size-1];
@@ -439,9 +472,11 @@ int main() {
   //debug_print_input(&n);
   
   float learning_rate = 1.;
-  unsigned mini_batch_size = 20;
-  unsigned num_epochs = 1;
+  unsigned mini_batch_size = 10;
+  unsigned num_epochs = 15;
   network_repeat_train(&n, data, shuffled_buf, data_length, learning_rate, mini_batch_size, num_epochs, eval_data, eval_data_length);
+  
+  //printf("%u/%u\n", network_eval(&n, eval_data, eval_data_length), eval_data_length);
   
   free(data);
   free(shuffled_buf);
