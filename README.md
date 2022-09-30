@@ -13,6 +13,8 @@ After each epoch, the neural network will be tested and the program will report 
 
 * At first, this project used OpenGL to run code on the GPU, but I removed that capability early on to make it easier to debug. Also, since the network I'm using this for is so small, the overhead of using the GPU made it significantly slower than not using the GPU. This feature will be re-implemented at a later date.
 
+* network\_compute, network\_compute\_err, and network\_update\_neurons all use pointer arithmetic because they were adapted from OpenCL kernels I had written
+
 * The MNIST dataset is loaded using code by Nuri Park which can be found at https://github.com/projectgalateia/mnist
 
 * I'm convinced there's a bug somewhere that's inhibiting proper training and I will find it and fix it
