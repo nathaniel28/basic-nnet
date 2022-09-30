@@ -204,6 +204,12 @@ void debug_print_network(network *n) {
     }
     printf("\n");
     
+    printf("error\n");
+    for (float *c_error = cur->error_term.ptr; c_error < ((float *) cur->error_term.ptr) + cur->error_term.length; c_error++) {
+      printf("%f\t", *c_error);
+    }
+    printf("\n");
+    
     printf("outputs\n");
     for (float *c_output = cur->outputs.ptr; c_output < ((float *) cur->outputs.ptr) + cur->outputs.length; c_output++) {
       printf("%f\t", *c_output);
@@ -448,7 +454,7 @@ void network_repeat_train(network *n, mnist_data *data, mnist_data **shuffled_bu
 #define PANIC(msg, code) { printf("%s failed with error code %d.\n", msg, code); exit(-1); }
 
 int main() {
-  srand(11);
+  //srand(11);
 
   mnist_data *data;
   unsigned data_length;
@@ -467,13 +473,13 @@ int main() {
   if (err) PANIC("mnist_load", err);
   
   network n;
-  unsigned layer_sizes[] = {15, 10, 0};
+  unsigned layer_sizes[] = {15, 10, 0}; // note: the input layer size is not included, and 0 terminates the array
   network_init(&n, &input, &layer_sizes[0]);
   //debug_print_input(&n);
   
   float learning_rate = 1.;
   unsigned mini_batch_size = 10;
-  unsigned num_epochs = 15;
+  unsigned num_epochs = 12;
   network_repeat_train(&n, data, shuffled_buf, data_length, learning_rate, mini_batch_size, num_epochs, eval_data, eval_data_length);
   
   //printf("%u/%u\n", network_eval(&n, eval_data, eval_data_length), eval_data_length);
