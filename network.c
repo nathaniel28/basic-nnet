@@ -25,24 +25,6 @@ float scaled_rand() {
   return 2*(rand()/(float) RAND_MAX - 0.5);
 }
 
-char* read_all(const char *filename) {
-  FILE *fp = fopen(filename, "r");
-  if (!fp) return NULL;
-  
-  fseek(fp, 0, SEEK_END);
-  size_t length = ftell(fp);
-  
-  char *buf = malloc(length + 1);
-  if (buf) {
-    rewind(fp);
-    fread(buf, 1, length, fp);
-    buf[length] = '\0';
-  }
-  
-  fclose(fp);
-  return buf;
-}
-
 void shuffle_data(mnist_data **buf, mnist_data *data, unsigned data_length) {
   for (mnist_data **cur = buf; cur < buf + data_length; cur++) {
     *cur = data++;
@@ -74,13 +56,13 @@ typedef struct {
   memory outputs;
   
   /*
-    THIS BUFFER IS USED MORE THAN ONCE, AND STORES AN INTERMIDIATE TERM BEFORE THE FINAL ANSWER.
-    furthermore, it is only used when a neural network is training, so use a different kernel if not
+    THIS BUFFER IS USED MORE THAN ONCE, AND STORES AN INTERMIDIATE TERM BEFORE THE ERROR TERM.
+    furthermore, it is only used when a neural network is training
     first, it stores sigmoid prime of weighted input in other words, σ′(zˡ) where
     zˡ = wˡaˡ⁻¹ + bˡ
     σ′(v) = exp(-v)/((1+exp(-v))^2)
-    this first value is computed in the same kernel as outputs for efficiency
-    second and finally, it stores error
+    this first value is computed in the same function or kernel as outputs for efficiency
+    second and finally, it stores the error term
     if this is the output layer, it becomes ∇ₐC⊙σ′(zˡ) where
     . ∇ₐC = (aᴸ - y) ASSUMING THE COST FUNCTION IS QUADRATIC COST where
     aᴸ = the output of the final layer in the network
@@ -125,12 +107,6 @@ int layer_init(layer *l, unsigned size, memory *inputs) {
   l->inputs = inputs;
   l->size = size;
   
-  for (float *cur = l->weights.ptr; cur < ((float *) l->weights.ptr) + l->weights.length; cur++) {
-    *cur = scaled_rand();
-  }
-  for (float *cur = l->biases.ptr; cur < ((float *) l->biases.ptr) + l->biases.length; cur++) {
-    *cur = scaled_rand();
-  }
   for (float *cur = l->error_term.ptr; cur < ((float *) l->error_term.ptr) + l->error_term.length; cur++) {
     *cur = 0;
   }
@@ -170,6 +146,7 @@ typedef struct {
   unsigned size;
 } network;
 
+/*
 void debug_print_input(network *n) {
   memory *input = n->layers[0].inputs;
   for (unsigned i = 0; i < input->length; i++) {
@@ -181,7 +158,6 @@ void debug_print_input(network *n) {
 
 void debug_print_network(network *n) {
   for (layer *cur = n->layers; cur < n->layers + n->size; cur++) {
-    if (cur != n->layers + n->size - 1) continue; // temp for less output
     printf("inputs\n");
     for (float *c_input = cur->inputs->ptr; c_input < ((float *) cur->inputs->ptr) + cur->inputs->length; c_input++) {
       printf("%f\t", *c_input);
@@ -200,24 +176,28 @@ void debug_print_network(network *n) {
     
     printf("biases\n");
     for (float *c_bias = cur->biases.ptr; c_bias < ((float *) cur->biases.ptr) + cur->biases.length; c_bias++) {
-      printf("%f\t", *c_bias);
+      printf("%f\n", *c_bias);
     }
-    printf("\n");
+    //printf("\n");
     
     printf("error\n");
     for (float *c_error = cur->error_term.ptr; c_error < ((float *) cur->error_term.ptr) + cur->error_term.length; c_error++) {
-      printf("%f\t", *c_error);
+      printf("%f\n", *c_error);
     }
-    printf("\n");
+    //printf("\n");
     
     printf("outputs\n");
     for (float *c_output = cur->outputs.ptr; c_output < ((float *) cur->outputs.ptr) + cur->outputs.length; c_output++) {
-      printf("%f\t", *c_output);
+      printf("%f\n", *c_output);
     }
-    printf("\n");
+    //printf("\n");
+    
+    printf("\nEND LAYER\n\n");
   }
 }
+*/
 
+// allocates memory to a network given input and layer sizes
 int network_init(network *n, memory *input, unsigned *layer_sizes) {
   int err = 0;
   
@@ -257,6 +237,57 @@ err_primary_layer_init:
   return err;
 }
 
+// helper function used by network_save
+int mem_write(memory *m, FILE *fp) {
+  return fwrite(m->ptr, m->unit_size, m->length, fp) != m->length;
+}
+
+// helper function used by network_load
+int mem_read(memory *m, FILE *fp) {
+  return fread(m->ptr, m->unit_size, m->length, fp) != m->length;
+}
+
+/*
+  file format:
+  network size
+  input size
+  layers
+    layer size
+    weights
+    biases
+  
+*/
+int network_save(network *n, FILE *fp) {
+  if (fwrite(&n->size, sizeof(n->size), 1, fp) != 1) return -1;
+  if (fwrite(&n->layers[0].inputs->length, sizeof(n->layers[0].inputs->length), 1, fp) != 1) return -2;
+  
+  for (layer *cur = n->layers; cur < n->layers + n->size; cur++) {
+    if (fwrite(&cur->size, sizeof(cur->size), 1, fp) != 1) return -3;
+    if (mem_write(&cur->weights, fp)) return -4;
+    if (mem_write(&cur->biases, fp)) return -5;
+  }
+  
+  return 0;
+}
+
+int network_load(network *n, FILE *fp) {
+  unsigned got_size;
+  size_t got_input_length;
+  if (fread(&got_size, sizeof(got_size), 1, fp) != 1) return -1;
+  if (fread(&got_input_length, sizeof(got_input_length), 1, fp) != 1) return -2;
+  if (got_size != n->size || got_input_length != n->layers[0].inputs->length) return -3;
+  
+  for (layer *cur = n->layers; cur < n->layers + n->size; cur++) {
+    unsigned got_layer_size;
+    if (fread(&got_layer_size, sizeof(got_layer_size), 1, fp) != 1) return -4;
+    if (got_layer_size != cur->size) return -5;
+    if (mem_read(&cur->weights, fp)) return -6;
+    if (mem_read(&cur->biases, fp)) return -7;
+  }
+  
+  return 0;
+}
+
 void network_destroy(network *n) {
   for (layer *cur = n->layers; cur < n->layers + n->size; cur++) {
     layer_destroy(cur);
@@ -264,11 +295,23 @@ void network_destroy(network *n) {
   free(n->layers);
 }
 
+// randomly initializes all weights and biases in $n
+void network_random_wb(network *n) {
+  for (layer *l = n->layers; l < n->layers + n->size; l++) {
+    for (float *cur = l->weights.ptr; cur < ((float *) l->weights.ptr) + l->weights.length; cur++) {
+      *cur = scaled_rand();
+    }
+    for (float *cur = l->biases.ptr; cur < ((float *) l->biases.ptr) + l->biases.length; cur++) {
+      *cur = scaled_rand();
+    }
+  }
+}
+
 /*
   stores σ(wˡaˡ⁻¹ + bˡ) in *outputs for each neuron in each layer
   stores wˡaˡ⁻¹ + bˡ in *error_term for each neuron in each layer, NOTE: this is not yet δ, this is just z
 */
-void network_compute(network *n) {
+void network_compute_output_and_weighted(network *n) {
   for (layer *cur = n->layers; cur < n->layers + n->size; cur++) {
     for (unsigned id = 0; id < cur->size; id++) {
       float *output = ((float *) cur->outputs.ptr) + id;
@@ -284,6 +327,24 @@ void network_compute(network *n) {
         res = 1/(1+raised);
         *output = res;
         *error_term = raised*res*res;
+      }
+    }
+  }
+}
+
+void network_compute_output(network *n) {
+  for (layer *cur = n->layers; cur < n->layers + n->size; cur++) {
+    for (unsigned id = 0; id < cur->size; id++) {
+      float *output = ((float *) cur->outputs.ptr) + id;
+      float *weights = ((float *) cur->weights.ptr) + id*cur->inputs->length;
+      float *bias = ((float *) cur->biases.ptr) + id;
+      float res = fdot(cur->inputs->ptr, weights, cur->inputs->length) + *bias;
+      float raised = exp(-res);
+      if (isnan(raised)) {
+        *output = 0;
+      } else {
+        res = 1/(1+raised);
+        *output = res;
       }
     }
   }
@@ -388,37 +449,16 @@ void network_train(network *n, mnist_data **data, unsigned data_length, float le
   mnist_data **cur = data;
   
   for (mnist_data **end = data + mini_batch_size; end <= data + data_length; end += mini_batch_size) {
-    //unsigned num_correct = 0;
     for (; cur < end; cur++) {
       int last_answer_index = (*cur)->label;
       answer[last_answer_index] = 1;
       n->layers[0].inputs->ptr = &(*cur)->data[0][0];
       
-      network_compute(n);
-      
-      //debug_print_network(n);
-      //exit(1); // debug temp
-      /*
-      printf("label: %d output: [", last_answer_index);
-      layer *last = &n->layers[n->size-1];
-      int guess = -1;
-      float max = 0;
-      for (unsigned i = 0; i < last->size; i++) {
-        float out = *(((float *) last->outputs.ptr) + i);
-        if (out > max) {
-          guess = i;
-          max = out;
-        }
-        printf("%f ", out);
-      }
-      printf("\b] guess: %d\n", guess);
-      if (guess == last_answer_index) num_correct++;
-      */
-      
+      network_compute_output_and_weighted(n);
       network_compute_err(n, &answer[0]);
+      
       answer[last_answer_index] = 0;
     }
-    //printf("%u/%u\n", num_correct, mini_batch_size);
     network_update_neurons(n, learning_rate, mini_batch_size);
   }
 }
@@ -427,7 +467,7 @@ unsigned network_eval(network *n, mnist_data *data, unsigned data_length) {
   unsigned num_correct = 0;
   for (mnist_data *cur = data; cur < data + data_length; cur++) {
     n->layers[0].inputs->ptr = &cur->data[0][0];
-    network_compute(n); // TODO: function that does not compute error as it is not used during evaluation
+    network_compute_output(n);
     layer *last = &n->layers[n->size-1];
     unsigned guess = 0;
     float max = *(float *) last->outputs.ptr;
@@ -443,28 +483,38 @@ unsigned network_eval(network *n, mnist_data *data, unsigned data_length) {
   return num_correct;
 }
 
-void network_repeat_train(network *n, mnist_data *data, mnist_data **shuffled_buf, unsigned data_length, float learning_rate, unsigned mini_batch_size, unsigned epochs, mnist_data *eval_data, unsigned eval_data_length) {
+/*
+  Let $n train repeatedly over $epochs number of epochs using $data.
+  If $eval_data is non-null, report the accuracy of the network each epoch.
+*/
+void network_repeat_train(network *n, mnist_data *data, mnist_data **shuffled_buf, unsigned input_data_length, float learning_rate, unsigned mini_batch_size, unsigned epochs, mnist_data *eval_data, unsigned eval_data_length) {
   while (epochs--) {
-    shuffle_data(shuffled_buf, data, data_length);
-    network_train(n, shuffled_buf, data_length, learning_rate, mini_batch_size);
-    printf("%u/%u\n", network_eval(n, eval_data, eval_data_length), eval_data_length);
+    shuffle_data(shuffled_buf, data, input_data_length);
+    network_train(n, shuffled_buf, input_data_length, learning_rate, mini_batch_size);
+    if (eval_data) {
+      // eh, let the optimizer turn this into part of a second while loop
+      printf("%u/%u\n", network_eval(n, eval_data, eval_data_length), eval_data_length);
+    }
   }
 }
 
 #define PANIC(msg, code) { printf("%s failed with error code %d.\n", msg, code); exit(-1); }
+#define SAVE_FILE "wb_save"
 
 int main() {
-  //srand(11);
+  srand(11);
 
   mnist_data *data;
-  unsigned data_length;
-  int err = mnist_load("data/train-images.idx3-ubyte", "data/train-labels.idx1-ubyte", &data, &data_length);
+  unsigned input_data_length;
+  int err = mnist_load("data/train-images.idx3-ubyte", "data/train-labels.idx1-ubyte", &data, &input_data_length);
   if (err) PANIC("mnist_load", err);
   memory input;
   input.length = 28*28;
   input.unit_size = sizeof(float);
+  // input.ptr must be set by network_train because it needs to change each iteration
   
-  mnist_data **shuffled_buf = malloc(sizeof(mnist_data *)*data_length);
+  // a buffer to keep shuffled versions of the input data in, used by network_repeat_train
+  mnist_data **shuffled_buf = malloc(sizeof(mnist_data *)*input_data_length);
   if (!shuffled_buf) PANIC("malloc", -1);
   
   mnist_data *eval_data;
@@ -473,17 +523,32 @@ int main() {
   if (err) PANIC("mnist_load", err);
   
   network n;
-  unsigned layer_sizes[] = {15, 10, 0}; // note: the input layer size is not included, and 0 terminates the array
+  unsigned layer_sizes[] = {30, 10, 0}; // note: the input layer size is not included, and 0 terminates the array
   network_init(&n, &input, &layer_sizes[0]);
-  //debug_print_input(&n);
+  
+  FILE *network_data_fp = fopen(SAVE_FILE, "r+");
+  if (network_data_fp) {
+    err = network_load(&n, network_data_fp);
+    if (err) PANIC("network_load", err);
+    rewind(network_data_fp);
+  } else {
+    network_data_fp = fopen(SAVE_FILE, "w");
+    if (!network_data_fp) PANIC("fopen", -1);
+    network_random_wb(&n);
+  }
   
   float learning_rate = 1.;
   unsigned mini_batch_size = 10;
   unsigned num_epochs = 12;
-  network_repeat_train(&n, data, shuffled_buf, data_length, learning_rate, mini_batch_size, num_epochs, eval_data, eval_data_length);
+  network_repeat_train(&n, data, shuffled_buf, input_data_length, learning_rate, mini_batch_size, num_epochs, eval_data, eval_data_length);
   
-  //printf("%u/%u\n", network_eval(&n, eval_data, eval_data_length), eval_data_length);
+  err = network_save(&n, network_data_fp);
+  if (err) {
+    printf("failed to save the weights and biases in "SAVE_FILE"\n");
+    remove(SAVE_FILE);
+  }
   
+  fclose(network_data_fp);
   free(data);
   free(shuffled_buf);
   free(eval_data);
