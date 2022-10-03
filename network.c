@@ -146,57 +146,6 @@ typedef struct {
   unsigned size;
 } network;
 
-/*
-void debug_print_input(network *n) {
-  memory *input = n->layers[0].inputs;
-  for (unsigned i = 0; i < input->length; i++) {
-    if (i % 28 == 0) printf("\n");
-    printf("%c", *(((float *) input->ptr) + i) >= 0.5 ? '1' : '0');
-  }
-  printf("\n");
-}
-
-void debug_print_network(network *n) {
-  for (layer *cur = n->layers; cur < n->layers + n->size; cur++) {
-    printf("inputs\n");
-    for (float *c_input = cur->inputs->ptr; c_input < ((float *) cur->inputs->ptr) + cur->inputs->length; c_input++) {
-      printf("%f\t", *c_input);
-    }
-    printf("\n");
-    
-    printf("weights\n");
-    for (float *w_begin = cur->weights.ptr; w_begin < ((float *) cur->weights.ptr) + cur->weights.length;) {
-      float *c_weights = w_begin;
-      for (; c_weights < w_begin + cur->inputs->length; c_weights++) {
-        printf("%f\t", *c_weights);
-      }
-      printf("\n");
-      w_begin = c_weights;
-    }
-    
-    printf("biases\n");
-    for (float *c_bias = cur->biases.ptr; c_bias < ((float *) cur->biases.ptr) + cur->biases.length; c_bias++) {
-      printf("%f\n", *c_bias);
-    }
-    //printf("\n");
-    
-    printf("error\n");
-    for (float *c_error = cur->error_term.ptr; c_error < ((float *) cur->error_term.ptr) + cur->error_term.length; c_error++) {
-      printf("%f\n", *c_error);
-    }
-    //printf("\n");
-    
-    printf("outputs\n");
-    for (float *c_output = cur->outputs.ptr; c_output < ((float *) cur->outputs.ptr) + cur->outputs.length; c_output++) {
-      printf("%f\n", *c_output);
-    }
-    //printf("\n");
-    
-    printf("\nEND LAYER\n\n");
-  }
-}
-*/
-
 // allocates memory to a network given input and layer sizes
 int network_init(network *n, memory *input, unsigned *layer_sizes) {
   int err = 0;
