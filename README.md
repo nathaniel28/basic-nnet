@@ -9,6 +9,14 @@ Clone this repository then `make`.
 `./network`  
 After each epoch, the neural network will be tested and the program will report how accurate it is.
 
+## Missing features
+
+* Needs to be able to use better cost functions, only uses quadratic cost right now (I'm working on adding cross-entropy cost)
+
+* Maybe should be able to use something besides sigmoid neurons but sigmoid neurons seem pretty good
+
+* No command line args, currently hyperparameters and data/save file paths are hard coded (not a difficult change, but I'm working on improving the network's performance
+
 ## Some notes
 
 * At first, this project used OpenGL to run code on the GPU, but I removed that capability early on to make it easier to debug. Also, since the network I'm using this for is so small, the overhead of using the GPU made it significantly slower than not using the GPU. This feature will be re-implemented at a later date.
@@ -16,9 +24,3 @@ After each epoch, the neural network will be tested and the program will report 
 * network\_compute, network\_compute\_err, and network\_update\_neurons all use pointer arithmetic because they were adapted from OpenCL kernels I had written
 
 * The MNIST dataset is loaded using code by Nuri Park which can be found at https://github.com/projectgalateia/mnist
-
-* I'm convinced there's a bug somewhere that's inhibiting proper training and I will find it and fix it
-
-* A lot of important parameters like learning rate, mini batch size, the number of epochs etc. are hard coded. It's not a priority right now for me to fix this since I'm working on debugging
-
-* The neural network can only use sigmoid neurons and the quadratic cost function. I'll get to allowing more options once bugs are fixed
